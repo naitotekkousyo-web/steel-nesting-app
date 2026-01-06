@@ -9,7 +9,7 @@ import datetime
 # ==========================================
 SHEET_ID = "1vyjK-jW-5Nl0VRHZRUyKlNAqIaO49NUxe3-kwvTtSUg"
 SHEET_NAME = "master"
-SHEET_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&sheet={SHEET_NAME}"
+SHEET_URL = f"https://docs.google.com/spreadsheets/d/{1vyjK-jW-5Nl0VRHZRUyKlNAqIaO49NUxe3-kwvTtSUg}/export?format=csv&gid=0"
 
 def clean_text(t):
     if not t: return ""
@@ -64,6 +64,7 @@ def calculate_nesting_with_marks(required_parts, available_stocks, kerf, mode, m
 # ==========================================
 st.set_page_config(page_title="鋼材一括取り合わせシステム", layout="wide")
 st.title("🏗️ 鋼材一括取り合わせ・重量計算システム")
+st.warning("【免責事項】本ツールの計算結果は目安です。実際の切断作業前には必ず再確認を行ってください。本ツール利用による損害について、制作者は一切の責任を負いません。")
 
 master_dict = load_master()
 size_options = ["(未選択)"] + [v['サイズ'] for v in master_dict.values()]
