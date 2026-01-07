@@ -59,7 +59,7 @@ def calculate_nesting_with_marks(required_parts, available_stocks, kerf, mode):
 # ==========================================
 st.set_page_config(page_title="鋼材一括取り合わせシステム", layout="wide")
 st.title("🏗️ 鋼材一括取り合わせ・重量計算システム")
-st.caption("ver 1.2.0 | 鋼材マスター自動更新(5分) | 総重量集計対応")
+st.caption("ver 1.2.1 | 鋼材マスター自動更新(5分) | 総重量集計対応")
 st.warning("【免責事項】計算結果は目安です。実際の切断前には必ず再確認を行ってください。")
 
 master_dict = load_master()
@@ -120,4 +120,63 @@ if st.button("🚀 計算実行", type="primary"):
 
 if st.session_state.calc_results:
     st.write("### 2. 計算結果")
-    total_order_rows =
+    total_order_rows = []
+    inst_rows = []
+    grand_total_weight = 0.0
+    
+    pdf_html_inst = f"<style>@media print {{ .page-break {{ page-break-before: always; }} }} body {{ font-family: sans-serif; }} .item-container {{ margin-bottom: 40px; border-bottom: 2px solid #000; padding-bottom: 20px; }} .bar-outer {{ display: flex; width: 100%; height: 40px; background: #fff; border: 2px solid #000; margin: 10px 0; }} .bar-inner {{ background: #333; border-right: 2px solid #fff; height: 100%; }}</style>"
+
+    for i, item in enumerate(st.session_state.calc_results):
+        pdf_html_inst += f"<div class='item-container {'page-break' if i>0 else ''}'><h2>切断加工指示書 ({item['size']})</h2><p>物件名: {pj_name}</p>"
+        
+        with st.expander(f"📦 {item['size']} (単重: {item['unit_w']} kg/m)", expanded=True):
+            for idx, r in enumerate(item['nesting']):
+                st.write(f"**No.{idx+1} (定尺:{r['stock_len']}mm)**")
+                # 画面用バー
+                bar_parts_html = "".join([f'<div style="width: {(p["len"]/r["stock_len"])*100}%; background: #333; border-right: 1px solid #fff;"></div>' for p in r['parts']])
+                st.markdown(f'<div style="display: flex; width: 100%; height: 30px; background: #fff; border: 2px solid #000; margin-bottom: 5px;">{bar_parts_html}</div>', unsafe_allow_html=True)
+                
+                detail_txt = " / ".join([f"({seq+1}) {p['mark']}:{int(p['len'])}mm" for seq, p in enumerate(r['parts'])])
+                st.caption(f"{detail_txt} [端材:{int(r['waste'])}mm]")
+                
+                # 指示書用蓄積
+                pdf_html_inst += f"<div style='margin-top:20px;'><strong>No.{idx+1} | 定尺: {r['stock_len']}mm</strong></div><div class='bar-outer'>{bar_parts_html}</div><div style='font-size:14px;'>{detail_txt} [端材:{int(r['waste'])}mm]</div>"
+                inst_rows.append({"物件名": pj_name, "鋼種": item['size'], "No": idx+1, "定尺(mm)": r['stock_len'], "切断構成": detail_txt, "端材(mm)": int(r['waste'])})
+
+            # 発注明細表
+            counts = pd.Series([r['stock_len'] for r in item['nesting']]).value_counts().sort_index()
+            st.write("📌 **この鋼種の発注内訳**")
+            summary_data = []
+            for s_len, count in counts.items():
+                weight = round((s_len / 1000) * item['unit_w'] * count, 2)
+                summary_data.append({"定尺(mm)": s_len, "必要本数": count, "重量合計(kg)": weight})
+                total_order_rows.append({"物件名": pj_name, "鋼種": item['size'], "定尺(mm)": s_len, "本数": count, "総重量(kg)": weight})
+                grand_total_weight += weight
+            st.table(pd.DataFrame(summary_data))
+        pdf_html_inst += "</div>"
+
+    # --- 総合計重量の表示 ---
+    st.divider()
+    c_tot1, c_tot2 = st.columns([2, 1])
+    with c_tot1:
+        st.subheader("🏁 全鋼種 総合計重量")
+    with c_tot2:
+        st.metric(label="Grand Total", value=f"{round(grand_total_weight, 2)} kg")
+    st.divider()
+
+    # --- 帳票出力 ---
+    st.write("### 3. 帳票出力")
+    today = datetime.date.today().strftime("%Y%m%d")
+    c1, c2 = st.columns(2)
+    with c1:
+        st.info("📊 **発注書**")
+        st.download_button("💾 CSVで保存", pd.DataFrame(total_order_rows).to_csv(index=False).encode('utf-8-sig'), f"Order_{today}.csv", "text/csv")
+        # 発注書HTML
+        order_html = f"<h2>鋼材発注書</h2><p>物件名: {pj_name}</p><table border='1' style='border-collapse:collapse; width:100%;'><tr><th>鋼種</th><th>定尺</th><th>本数</th><th>重量(kg)</th></tr>"
+        for d in total_order_rows: order_html += f"<tr><td>{d['鋼種']}</td><td>{d['定尺(mm)']}mm</td><td>{d['本数']}</td><td>{d['総重量(kg)']}</td></tr>"
+        order_html += f"<tr><td colspan='3' align='right'><b>総合計重量</b></td><td><b>{round(grand_total_weight, 2)} kg</b></td></tr></table><script>window.print();</script>"
+        st.download_button("🖨️ PDF/印刷用", order_html, f"Order_{today}.html", "text/html")
+    with c2:
+        st.info("✂️ **加工指示書**")
+        st.download_button("💾 CSVで保存", pd.DataFrame(inst_rows).to_csv(index=False).encode('utf-8-sig'), f"CutList_{today}.csv", "text/csv")
+        st.download_button("🖨️ PDF/印刷用", pdf_html_inst + "<script>window.print();</script>", f"CutList_{today}.html", "text/html")
