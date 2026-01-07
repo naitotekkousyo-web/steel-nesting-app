@@ -5,7 +5,7 @@ import io
 import datetime
 
 # ==========================================
-# 1. マスター読み込み
+# 1. 設定とマスター読み込み
 # ==========================================
 SHEET_ID = "1vyjK-jW-5Nl0VRHZRUyKlNAqIaO49NUxe3-kwvTtSUg"
 SHEET_NAME = "master"
@@ -64,7 +64,7 @@ def calculate_nesting_with_marks(required_parts, available_stocks, kerf, mode, m
 # ==========================================
 st.set_page_config(page_title="鋼材一括取り合わせシステム", layout="wide")
 st.title("🏗️ 鋼材一括取り合わせ・重量計算システム")
-st.warning("【免責事項】本ツールの計算結果は目安です。実際の切断作業前には必ず再確認を行ってください。本ツール利用による損害について、制作者は一切の責任を負いません。")
+st.warning("【免責事項】本ツールの計算結果は目安です。実際の切断作業前には必ず再確認を行ってください。")
 
 master_dict = load_master()
 size_options = ["(未選択)"] + [v['サイズ'] for v in master_dict.values()]
@@ -123,23 +123,26 @@ if st.button("🚀 計算実行", type="primary"):
             results_data.append({"size": data['size_name'], "unit_w": data['unit_weight'], "nesting": res})
         st.session_state.calc_results = results_data
 
-# 結果表示関数（画面と印刷で共通化）
-def generate_bar_html(r):
-    # バー自体の表示
-    html = '<div style="display: flex; width: 100%; height: 35px; background-color: #eee; border: 2px solid #333; border-radius: 4px; overflow: visible; margin-bottom: 5px; position: relative;">'
+# ==========================================
+# 4. 結果表示 & 帳票
+# ==========================================
+def generate_bar_html(r, is_print=False):
+    # 切断材は黒(#333)、端材は白(#fff)
+    bg_color = "#333"
+    waste_color = "#fff"
+    txt_color = "#fff"
+    
+    html = f'<div style="display: flex; width: 100%; height: 35px; background-color: {waste_color}; border: 2px solid #000; border-radius: 4px; overflow: hidden; margin-bottom: 5px;">'
     for p in r['parts']:
         ratio = (p['len'] / r['stock_len']) * 100
-        # 文字がはみ出さない工夫：非常に短い場合は文字を表示しない（下のテキスト欄に任せる）
         label = f"{p['mark']} {int(p['len'])}" if ratio > 8 else ""
-        html += f'<div style="width: {ratio}%; background-color: #4CAF50; border-right: 2px solid #000; color: white; font-size: 11px; text-align: center; line-height: 35px; overflow: hidden; white-space: nowrap; font-weight: bold;">{label}</div>'
+        html += f'<div style="width: {ratio}%; background-color: {bg_color}; border-right: 2px solid #fff; color: {txt_color}; font-size: 11px; text-align: center; line-height: 35px; overflow: hidden; white-space: nowrap; font-weight: bold;">{label}</div>'
     html += '</div>'
     
-    # 【追加】バーの下に詳細をテキストで並べる（短い部材対策）
     html += '<div style="display: flex; flex-wrap: wrap; gap: 10px; font-size: 12px; margin-bottom: 15px; color: #333;">'
     for i, p in enumerate(r['parts']):
         html += f'<span>[{i+1}] <b>{p["mark"]}</b>: {int(p["len"])}mm</span>'
-    html += f'<span style="color: #666;">（残材: {int(r["waste"])}mm）</span>'
-    html += '</div>'
+    html += f'<span style="color: #666;">（端材: {int(r["waste"])}mm）</span></div>'
     return html
 
 if st.session_state.calc_results:
@@ -152,47 +155,65 @@ if st.session_state.calc_results:
                 st.markdown(generate_bar_html(r), unsafe_allow_html=True)
 
     st.write("### 3. 帳票出力")
-    c_p1, c_p2 = st.columns(2)
     
-    # 指示書HTML
+    # --- データ準備 (CSV用) ---
+    order_rows = []
+    inst_rows = []
+    for item in st.session_state.calc_results:
+        # 発注用
+        counts = pd.Series([r['stock_len'] for r in item['nesting']]).value_counts().sort_index()
+        for s_len, count in counts.items():
+            order_rows.append({"鋼種": item['size'], "定尺(mm)": s_len, "本数": count})
+        # 指示用
+        for idx, r in enumerate(item['nesting']):
+            inst_rows.append({
+                "鋼種": item['size'], "No": idx+1, "使用定尺": r['stock_len'],
+                "切断構成": " / ".join([f"{p['mark']}:{int(p['len'])}mm" for p in r['parts']]),
+                "端材": int(r['waste'])
+            })
+    
+    order_df = pd.DataFrame(order_rows)
+    inst_df = pd.DataFrame(inst_rows)
+
+    # --- HTML帳票準備 (PDF/印刷用) ---
     inst_h = f"""
     <style>
         @media print {{ .page-break {{ page-break-before: always; }} }}
         body {{ font-family: sans-serif; }}
         .item-container {{ margin-bottom: 40px; border-bottom: 2px solid #000; padding-bottom: 20px; }}
-        .bar-outer {{ display: flex; width: 100%; height: 40px; background: #eee; border: 2px solid #000; margin: 10px 0; }}
-        .bar-inner {{ background: #4CAF50; border-right: 2px solid #000; color: #fff; text-align: center; line-height: 40px; font-size: 12px; font-weight: bold; overflow: hidden; }}
+        .bar-outer {{ display: flex; width: 100%; height: 40px; background: #fff; border: 2px solid #000; margin: 10px 0; }}
+        .bar-inner {{ background: #333; border-right: 2px solid #fff; color: #fff; text-align: center; line-height: 40px; font-size: 12px; font-weight: bold; overflow: hidden; }}
         .detail-text {{ display: flex; flex-wrap: wrap; gap: 15px; font-size: 14px; margin-bottom: 20px; font-weight: bold; }}
     </style>
     """
     for i, item in enumerate(st.session_state.calc_results):
         inst_h += f"<div class='item-container {'page-break' if i>0 else ''}'><h2>切断加工指示書 ({item['size']})</h2>"
         for idx, r in enumerate(item['nesting']):
-            inst_h += f"<div style='margin-top:20px;'><strong>No.{idx+1} | 使用定尺: {r['stock_len']}mm</strong></div>"
+            inst_h += f"<div style='margin-top:20px;'><strong>No.{idx+1} | 定尺: {r['stock_len']}mm</strong></div>"
             inst_h += "<div class='bar-outer'>"
             for p in r['parts']:
                 ratio = (p['len'] / r['stock_len']) * 100
                 inst_h += f"<div class='bar-inner' style='width: {ratio}%'></div>"
-            inst_h += "</div>"
-            # 指示書のバーの下に詳細を大きく表示
-            inst_h += "<div class='detail-text'>"
+            inst_h += "</div><div class='detail-text'>"
             for seq, p in enumerate(r['parts']):
                 inst_h += f"<span>({seq+1}) {p['mark']}: {int(p['len'])}mm</span>"
-            inst_h += f"<span style='color:#666;'>[残:{int(r['waste'])}mm]</span></div>"
+            inst_h += f"<span style='color:#666;'>[端材:{int(r['waste'])}mm]</span></div>"
         inst_h += "</div>"
     inst_h += "<script>window.print();</script>"
 
-    # 発注書HTML
-    order_h = f"<style>table{{width:100%;border-collapse:collapse;}}th,td{{border:1px solid black;padding:8px;}}</style><h1>鋼材発注書</h1><table><tr><th>鋼種</th><th>定尺</th><th>本数</th></tr>"
-    for item in st.session_state.calc_results:
-        counts = pd.Series([r['stock_len'] for r in item['nesting']]).value_counts().sort_index()
-        for s_len, count in counts.items():
-            order_h += f"<tr><td>{item['size']}</td><td>{s_len}mm</td><td>{count}</td></tr>"
+    order_h = f"<style>table{{width:100%;border-collapse:collapse;}}th,td{{border:1px solid black;padding:8px;text-align:left;}}</style><h1>鋼材発注書</h1><p>発行日: {today}</p><table><tr><th>鋼種</th><th>定尺(mm)</th><th>本数</th></tr>"
+    for _, row in order_df.iterrows():
+        order_h += f"<tr><td>{row['鋼種']}</td><td>{row['定尺(mm)']}</td><td>{row['本数']}</td></tr>"
     order_h += "</table><script>window.print();</script>"
 
-    with c_p1: st.download_button("📄 発注書を出力", order_h, file_name=f"order_{today}.html", mime="text/html")
-    with c_p2: st.download_button("✂️ 指示書（図解付き）を出力", inst_h, file_name=f"cut_list_{today}.html", mime="text/html")
+    # --- ボタン配置 ---
+    c1, c2 = st.columns(2)
+    with c1:
+        st.info("📊 **発注書**")
+        st.download_button("💾 発注書 CSV出力", order_df.to_csv(index=False).encode('utf-8-sig'), f"order_{today}.csv", "text/csv")
+        st.download_button("🖨️ 発注書 PDF/印刷", order_h, f"order_{today}.html", "text/html")
 
-
-
-
+    with c2:
+        st.info("✂️ **加工指示書**")
+        st.download_button("💾 指示書 CSV出力", inst_df.to_csv(index=False).encode('utf-8-sig'), f"cut_list_{today}.csv", "text/csv")
+        st.download_button("🖨️ 指示書 PDF/印刷", inst_h, f"cut_list_{today}.html", "text/html")
