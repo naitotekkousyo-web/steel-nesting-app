@@ -9,7 +9,7 @@ import datetime
 # ==========================================
 SHEET_ID = "1vyjK-jW-5Nl0VRHZRUyKlNAqIaO49NUxe3-kwvTtSUg"
 SHEET_NAME = "master"
-SHEET_URL = f"https://docs.google.com/spreadsheets/d/{1vyjK-jW-5Nl0VRHZRUyKlNAqIaO49NUxe3-kwvTtSUg}/gviz/tq?tqx=out:csv&sheet={master}"
+SHEET_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&sheet={SHEET_NAME}"
 
 def clean_text(t):
     if not t: return ""
@@ -192,6 +192,7 @@ if st.session_state.calc_results:
 
     with c_p1: st.download_button("📄 発注書を出力", order_h, file_name=f"order_{today}.html", mime="text/html")
     with c_p2: st.download_button("✂️ 指示書（図解付き）を出力", inst_h, file_name=f"cut_list_{today}.html", mime="text/html")
+
 
 
 
