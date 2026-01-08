@@ -35,23 +35,21 @@ def load_master():
         return {}
 
 # ==========================================
-# 3. ロジック：モード別の挙動（まとめ切り対応）
+# 3. ロジック：モード別の挙動（まとめ切り対応 ＋ 残材範囲指定）
 # ==========================================
 def calculate_nesting_with_marks(required_parts, available_stocks, kerf, mode, min_waste_limit, max_waste_limit):
     # 部材は常に長い順に並べておく
     working_list = sorted(required_parts, key=lambda x: x['len'], reverse=True)
     results = []
     
-    # 処理用リスト（ここからpopしていく）
+    # 処理用リスト
     remaining_parts = working_list[:]
     
     # 定尺の優先順位
-    # ロス削減: 短い方から検討（必要最小限の長さを使う）
-    # カット数削減: 長い方から検討（一度に多く取るため）
     if mode == "ロス削減重視":
-        stocks_order = sorted(available_stocks) 
+        stocks_order = sorted(available_stocks) # 短い順
     else:
-        stocks_order = sorted(available_stocks, reverse=True)
+        stocks_order = sorted(available_stocks, reverse=True) # 長い順
 
     while remaining_parts:
         best_pick = None
@@ -60,10 +58,6 @@ def calculate_nesting_with_marks(required_parts, available_stocks, kerf, mode, m
         # A. カット数削減重視（パターンリピート最大化）
         # ---------------------------------------------------------
         if mode == "カット数削減重視":
-            # 「今ある部材」で「最も効率よく埋まるパターン」を1つ作る
-            # そのパターンが「何回繰り返せるか」を計算し、まとめて採用する
-            
-            # 1. 基準となるパターンを作成（長い定尺優先で、First Fit Decreasing）
             pattern_candidate = None
             
             for s_len in stocks_order:
@@ -71,8 +65,6 @@ def calculate_nesting_with_marks(required_parts, available_stocks, kerf, mode, m
                 current_free = s_len
                 current_used = 0
                 
-                # シミュレーション用に一時的な使用フラグ管理は難しいので、
-                # 単純に「上から順に詰め込んだらどうなるか」を見る
                 for i, part in enumerate(remaining_parts):
                     needed = part['len'] + (kerf if temp_indices else 0)
                     if current_free >= needed:
@@ -81,57 +73,49 @@ def calculate_nesting_with_marks(required_parts, available_stocks, kerf, mode, m
                         current_used += part['len']
                 
                 if temp_indices:
-                    # パターンが見つかった
                     waste = s_len - current_used - (len(temp_indices)-1)*kerf
+                    
+                    # カット数削減モードでも、明らかに設定範囲外の残材が出る定尺は避けるべきか？
+                    # 基本的には「まとめ切り」優先だが、もし判定を入れるならここ。
+                    # 今回は「作業性最優先」のため、入ればOKとするが、
+                    # あまりに短い端材（min未満）が出る場合は次を探すなど調整可能。
+                    # いったんここは「入ればOK」とする。
+                    
                     pattern_candidate = {
                         "stock_len": s_len,
-                        "indices": temp_indices, # これは remaining_parts 内の相対位置
+                        "indices": temp_indices,
                         "waste": waste,
                         "lengths": [remaining_parts[i]['len'] for i in temp_indices]
                     }
-                    break # 長い定尺優先なので、見つかった時点でその定尺を採用（これがベースパターン）
+                    break 
             
             if pattern_candidate:
-                # 2. このパターンが何回繰り返せるか計算する
-                # 必要な長さの構成: 例 [3000, 3000, 2000]
                 req_counts = Counter(pattern_candidate['lengths'])
-                
-                # 全体の在庫にある各長さの個数
                 total_counts = Counter([p['len'] for p in remaining_parts])
                 
-                # リピート可能回数 = 各長さについて (在庫数 // 1回あたりの必要数) の最小値
                 max_repeats = float('inf')
                 for length, count_needed in req_counts.items():
                     available = total_counts.get(length, 0)
                     max_repeats = min(max_repeats, available // count_needed)
                 
-                if max_repeats < 1: max_repeats = 1 # 論理上ありえないが念のため
-                
-                # 3. max_repeats 回分、結果に追加し、部材リストから削除する
-                # インデックス管理が面倒なので、長さとマークでマッチングして削除
+                if max_repeats < 1: max_repeats = 1
                 
                 for _ in range(max_repeats):
                     chosen_parts = []
-                    # パターンの構成要素（長さ）を一つずつ取り出す
                     for length in pattern_candidate['lengths']:
-                        # remaining_partsの中から、その長さを持つ最初の要素を探してpop
                         for i, part in enumerate(remaining_parts):
                             if part['len'] == length:
                                 chosen_parts.append(remaining_parts.pop(i))
                                 break
-                    
-                    # 結果に追加
                     results.append({
                         "stock_len": pattern_candidate['stock_len'],
                         "parts": chosen_parts,
                         "waste": int(pattern_candidate['waste'])
                     })
-                
-                # ループ継続（次のパターンを探す）
                 continue
 
         # ---------------------------------------------------------
-        # B. ロス削減重視（従来の端材最小化ロジック）
+        # B. ロス削減重視（残材範囲指定を厳密に適用）
         # ---------------------------------------------------------
         else:
             best_waste = float('inf')
@@ -151,9 +135,12 @@ def calculate_nesting_with_marks(required_parts, available_stocks, kerf, mode, m
                 if temp_indices:
                     waste = s_len - current_used - (len(temp_indices)-1)*kerf
                     
-                    is_waste_ok = (waste >= min_waste_limit) or (waste <= kerf)
+                    # 【修正】残材が設定範囲内（min以上 max以下）かチェック
+                    # ※ただし、ほぼゼロ（切断シロ以下）なら「ピッタリ」なのでOKとする
+                    is_range_ok = (min_waste_limit <= waste <= max_waste_limit)
+                    is_perfect = (waste <= kerf)
                     
-                    if is_waste_ok:
+                    if is_range_ok or is_perfect:
                         if waste < best_waste:
                             best_waste = waste
                             best_pick = {"stock_len": s_len, "indices": temp_indices, "waste": waste}
@@ -162,14 +149,14 @@ def calculate_nesting_with_marks(required_parts, available_stocks, kerf, mode, m
                 chosen_parts = [remaining_parts[i] for i in best_pick["indices"]]
                 for i in sorted(best_pick["indices"], reverse=True):
                     remaining_parts.pop(i)
-                
                 results.append({
                     "stock_len": best_pick["stock_len"],
                     "parts": chosen_parts,
                     "waste": int(best_pick["waste"])
                 })
             else:
-                # 救済措置：条件を満たすものがない場合、一番長い定尺に入れて処理を進める
+                # 設定範囲に収まる定尺がない場合
+                # 仕方ないので一番長い定尺を使って1本だけ処理（無限ループ回避）
                 if remaining_parts:
                     part = remaining_parts.pop(0)
                     max_stock = max(available_stocks)
@@ -188,7 +175,7 @@ def calculate_nesting_with_marks(required_parts, available_stocks, kerf, mode, m
 # ==========================================
 st.set_page_config(page_title="鋼材一括取り合わせシステム", layout="wide")
 st.title("🏗️ 鋼材一括取り合わせ・重量計算システム")
-st.caption("ver 1.5.0 | ロジック完成版：まとめ切り（パターン繰り返し）対応")
+st.caption("ver 1.5.1 | 残材設定入力 修正済み")
 
 master_dict = load_master()
 size_options = ["(未選択)"] + [v['サイズ'] for v in master_dict.values()]
@@ -205,17 +192,21 @@ with st.sidebar:
     # モード設定
     calc_mode = st.radio("計算モード", ["ロス削減重視", "カット数削減重視"])
     if calc_mode == "ロス削減重視":
-        st.caption("💡 **重量最優先**：端材が最小になる定尺を1本ずつ厳密に選定します。定尺の種類や切り方はバラバラになりやすいです。")
+        st.caption("💡 **重量最優先**：端材設定を守りつつ、最もロスの少ない定尺を選定します。")
     else:
-        st.caption("💡 **作業性最優先**：同じ切り方（パターン）をできるだけ繰り返します。定尺を束ねて一度に切断（まとめ切り）するのに適しています。")
+        st.caption("💡 **作業性最優先**：同じパターンを繰り返して「まとめ切り」しやすくします。")
     
-    default_kerf = st.number_input("切断シロ (mm)", value=5)
+    default_kerf = st.number_input("切断シロ (mm)", value=5, step=1)
     
+    # 【修正】残材長さ設定（両方とも入力可能に・ステップ値設定）
+    st.write("残材許容範囲 (mm)")
     c_w1, c_w2 = st.columns(2)
     with c_w1:
-        min_waste = st.number_input("残材 最小(mm)", value=0, help="これより短い端材が出ないように計算します（0に近い端材は許容されます）")
+        # 初期値 10mm
+        min_waste = st.number_input("最小", value=10, step=10, help="これ以下の端材が出ないようにします（0に近いジャストサイズは許容）")
     with c_w2:
-        max_waste = st.number_input("残材 最大(mm)", value=9999, disabled=True)
+        # 初期値 1000mm、入力可能に変更
+        max_waste = st.number_input("最大", value=1000, step=100, help="これ以上の長い端材が出ないように定尺を選びます")
     
     st.write("使用する定尺長さ")
     stock_lengths = sorted([L for L in range(6000, 13000, 1000)])
