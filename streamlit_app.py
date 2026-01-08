@@ -3,6 +3,7 @@ import pandas as pd
 import requests
 import io
 import datetime
+from collections import Counter
 
 # ==========================================
 # 1. ユーティリティ関数
@@ -34,58 +35,151 @@ def load_master():
         return {}
 
 # ==========================================
-# 3. ロジック：重量効率（密度）優先アルゴリズム
+# 3. ロジック：モード別の挙動（まとめ切り対応）
 # ==========================================
-def calculate_nesting_with_marks(required_parts, available_stocks, kerf, mode):
-    working_list = sorted(required_parts, key=lambda x: x['len'], reverse=True) if mode == "ロス削減重視" else required_parts[:]
+def calculate_nesting_with_marks(required_parts, available_stocks, kerf, mode, min_waste_limit, max_waste_limit):
+    # 部材は常に長い順に並べておく
+    working_list = sorted(required_parts, key=lambda x: x['len'], reverse=True)
     results = []
+    
+    # 処理用リスト（ここからpopしていく）
     remaining_parts = working_list[:]
-    stocks = sorted(available_stocks)
+    
+    # 定尺の優先順位
+    # ロス削減: 短い方から検討（必要最小限の長さを使う）
+    # カット数削減: 長い方から検討（一度に多く取るため）
+    if mode == "ロス削減重視":
+        stocks_order = sorted(available_stocks) 
+    else:
+        stocks_order = sorted(available_stocks, reverse=True)
 
     while remaining_parts:
         best_pick = None
-        best_efficiency = -1.0
         
-        for s_len in stocks:
-            temp_indices = []
-            current_free = s_len
-            current_total_parts_len = 0
+        # ---------------------------------------------------------
+        # A. カット数削減重視（パターンリピート最大化）
+        # ---------------------------------------------------------
+        if mode == "カット数削減重視":
+            # 「今ある部材」で「最も効率よく埋まるパターン」を1つ作る
+            # そのパターンが「何回繰り返せるか」を計算し、まとめて採用する
             
-            for i, part in enumerate(remaining_parts):
-                needed = part['len'] + (kerf if temp_indices else 0)
-                if current_free >= needed:
-                    temp_indices.append(i)
-                    current_free -= (part['len'] + kerf)
-                    current_total_parts_len += part['len']
+            # 1. 基準となるパターンを作成（長い定尺優先で、First Fit Decreasing）
+            pattern_candidate = None
             
-            if temp_indices:
-                efficiency = current_total_parts_len / s_len
-                if efficiency > best_efficiency:
-                    best_efficiency = efficiency
-                    best_pick = {
+            for s_len in stocks_order:
+                temp_indices = []
+                current_free = s_len
+                current_used = 0
+                
+                # シミュレーション用に一時的な使用フラグ管理は難しいので、
+                # 単純に「上から順に詰め込んだらどうなるか」を見る
+                for i, part in enumerate(remaining_parts):
+                    needed = part['len'] + (kerf if temp_indices else 0)
+                    if current_free >= needed:
+                        temp_indices.append(i)
+                        current_free -= (part['len'] + kerf)
+                        current_used += part['len']
+                
+                if temp_indices:
+                    # パターンが見つかった
+                    waste = s_len - current_used - (len(temp_indices)-1)*kerf
+                    pattern_candidate = {
                         "stock_len": s_len,
-                        "indices": temp_indices[:],
-                        "waste": s_len - current_total_parts_len - (len(temp_indices)-1)*kerf
+                        "indices": temp_indices, # これは remaining_parts 内の相対位置
+                        "waste": waste,
+                        "lengths": [remaining_parts[i]['len'] for i in temp_indices]
                     }
-                elif abs(efficiency - best_efficiency) < 1e-7:
-                    if best_pick and s_len < best_pick["stock_len"]:
-                        best_pick = {
-                            "stock_len": s_len,
-                            "indices": temp_indices[:],
-                            "waste": s_len - current_total_parts_len - (len(temp_indices)-1)*kerf
-                        }
+                    break # 長い定尺優先なので、見つかった時点でその定尺を採用（これがベースパターン）
+            
+            if pattern_candidate:
+                # 2. このパターンが何回繰り返せるか計算する
+                # 必要な長さの構成: 例 [3000, 3000, 2000]
+                req_counts = Counter(pattern_candidate['lengths'])
+                
+                # 全体の在庫にある各長さの個数
+                total_counts = Counter([p['len'] for p in remaining_parts])
+                
+                # リピート可能回数 = 各長さについて (在庫数 // 1回あたりの必要数) の最小値
+                max_repeats = float('inf')
+                for length, count_needed in req_counts.items():
+                    available = total_counts.get(length, 0)
+                    max_repeats = min(max_repeats, available // count_needed)
+                
+                if max_repeats < 1: max_repeats = 1 # 論理上ありえないが念のため
+                
+                # 3. max_repeats 回分、結果に追加し、部材リストから削除する
+                # インデックス管理が面倒なので、長さとマークでマッチングして削除
+                
+                for _ in range(max_repeats):
+                    chosen_parts = []
+                    # パターンの構成要素（長さ）を一つずつ取り出す
+                    for length in pattern_candidate['lengths']:
+                        # remaining_partsの中から、その長さを持つ最初の要素を探してpop
+                        for i, part in enumerate(remaining_parts):
+                            if part['len'] == length:
+                                chosen_parts.append(remaining_parts.pop(i))
+                                break
+                    
+                    # 結果に追加
+                    results.append({
+                        "stock_len": pattern_candidate['stock_len'],
+                        "parts": chosen_parts,
+                        "waste": int(pattern_candidate['waste'])
+                    })
+                
+                # ループ継続（次のパターンを探す）
+                continue
 
-        if best_pick:
-            chosen_parts = [remaining_parts[i] for i in best_pick["indices"]]
-            for i in sorted(best_pick["indices"], reverse=True):
-                remaining_parts.pop(i)
-            results.append({
-                "stock_len": best_pick["stock_len"],
-                "parts": chosen_parts,
-                "waste": max(0, int(best_pick["waste"]))
-            })
+        # ---------------------------------------------------------
+        # B. ロス削減重視（従来の端材最小化ロジック）
+        # ---------------------------------------------------------
         else:
-            break
+            best_waste = float('inf')
+            
+            for s_len in stocks_order:
+                temp_indices = []
+                current_free = s_len
+                current_used = 0
+                
+                for i, part in enumerate(remaining_parts):
+                    needed = part['len'] + (kerf if temp_indices else 0)
+                    if current_free >= needed:
+                        temp_indices.append(i)
+                        current_free -= (part['len'] + kerf)
+                        current_used += part['len']
+                
+                if temp_indices:
+                    waste = s_len - current_used - (len(temp_indices)-1)*kerf
+                    
+                    is_waste_ok = (waste >= min_waste_limit) or (waste <= kerf)
+                    
+                    if is_waste_ok:
+                        if waste < best_waste:
+                            best_waste = waste
+                            best_pick = {"stock_len": s_len, "indices": temp_indices, "waste": waste}
+        
+            if best_pick:
+                chosen_parts = [remaining_parts[i] for i in best_pick["indices"]]
+                for i in sorted(best_pick["indices"], reverse=True):
+                    remaining_parts.pop(i)
+                
+                results.append({
+                    "stock_len": best_pick["stock_len"],
+                    "parts": chosen_parts,
+                    "waste": int(best_pick["waste"])
+                })
+            else:
+                # 救済措置：条件を満たすものがない場合、一番長い定尺に入れて処理を進める
+                if remaining_parts:
+                    part = remaining_parts.pop(0)
+                    max_stock = max(available_stocks)
+                    results.append({
+                        "stock_len": max_stock,
+                        "parts": [part],
+                        "waste": int(max_stock - part['len'])
+                    })
+                else:
+                    break
             
     return results
 
@@ -94,7 +188,7 @@ def calculate_nesting_with_marks(required_parts, available_stocks, kerf, mode):
 # ==========================================
 st.set_page_config(page_title="鋼材一括取り合わせシステム", layout="wide")
 st.title("🏗️ 鋼材一括取り合わせ・重量計算システム")
-st.caption("ver 1.3.4 | 構文エラー修正済み・安定版")
+st.caption("ver 1.5.0 | ロジック完成版：まとめ切り（パターン繰り返し）対応")
 
 master_dict = load_master()
 size_options = ["(未選択)"] + [v['サイズ'] for v in master_dict.values()]
@@ -107,8 +201,22 @@ with st.sidebar:
     pj_name = st.text_input("物件名・現場名", placeholder="例：〇〇邸新築工事")
     st.divider()
     st.header("⚙️ 計算設定")
+    
+    # モード設定
     calc_mode = st.radio("計算モード", ["ロス削減重視", "カット数削減重視"])
+    if calc_mode == "ロス削減重視":
+        st.caption("💡 **重量最優先**：端材が最小になる定尺を1本ずつ厳密に選定します。定尺の種類や切り方はバラバラになりやすいです。")
+    else:
+        st.caption("💡 **作業性最優先**：同じ切り方（パターン）をできるだけ繰り返します。定尺を束ねて一度に切断（まとめ切り）するのに適しています。")
+    
     default_kerf = st.number_input("切断シロ (mm)", value=5)
+    
+    c_w1, c_w2 = st.columns(2)
+    with c_w1:
+        min_waste = st.number_input("残材 最小(mm)", value=0, help="これより短い端材が出ないように計算します（0に近い端材は許容されます）")
+    with c_w2:
+        max_waste = st.number_input("残材 最大(mm)", value=9999, disabled=True)
+    
     st.write("使用する定尺長さ")
     stock_lengths = sorted([L for L in range(6000, 13000, 1000)])
     selected_stocks = [L for L in stock_lengths if st.checkbox(f"{L}mm", value=True, key=f"stock_{L}")]
@@ -149,7 +257,7 @@ if st.button("🚀 計算実行", type="primary"):
                     for _ in range(n): parts.append({"len": l, "mark": m})
                 except Exception: continue
             if parts:
-                res = calculate_nesting_with_marks(parts, selected_stocks, default_kerf, calc_mode)
+                res = calculate_nesting_with_marks(parts, selected_stocks, default_kerf, calc_mode, min_waste, max_waste)
                 results_data.append({"size": data['size_name'], "unit_w": data['unit_weight'], "nesting": res})
         st.session_state.calc_results = results_data
 
@@ -169,7 +277,6 @@ if st.session_state.calc_results:
             for idx, r in enumerate(item['nesting']):
                 st.write(f"**No.{idx+1} (定尺:{r['stock_len']}mm)**")
                 
-                # バーのHTMLを分割して安全に作成
                 bar_parts_html = "".join([f'<div style="width: {(p["len"]/r["stock_len"])*100}%; background: #333; border-right: 1px solid #fff;"></div>' for p in r['parts']])
                 bar_style = "display: flex; width: 100%; height: 30px; background: #fff; border: 2px solid #000; margin-bottom: 5px;"
                 st.markdown(f'<div style="{bar_style}">{bar_parts_html}</div>', unsafe_allow_html=True)
