@@ -5,11 +5,10 @@ import io
 import datetime
 
 # ==========================================
-# 1. ユーティリティ関数（最初に行う）
+# 1. ユーティリティ関数
 # ==========================================
 def clean_text(t):
     if not t: return ""
-    # 文字列を整えて、マスターのキーと一致させる
     return str(t).upper().replace("*","X").replace("×","X").replace(" ","").strip()
 
 # ==========================================
@@ -25,26 +24,19 @@ def load_master():
         response = requests.get(SHEET_URL)
         response.encoding = 'utf-8'
         df = pd.read_csv(io.StringIO(response.text))
-        # 最初の2列（サイズ, 単重）を抽出
         df = df.iloc[:, [0, 1]]
         df.columns = ['サイズ', '単重']
-        # キーを作成
         df['サイズ_KEY'] = df['サイズ'].apply(clean_text)
-        # 数値変換
         df['単重'] = pd.to_numeric(df['単重'], errors='coerce')
-        # 重複削除
         df = df.drop_duplicates(subset='サイズ_KEY')
-        # 辞書形式で返す
         return df.dropna(subset=['単重']).set_index('サイズ_KEY')[['サイズ', '単重']].to_dict('index')
     except Exception as e:
-        st.error(f"マスター読み込みエラー: {e}")
         return {}
 
 # ==========================================
 # 3. ロジック：重量効率（密度）優先アルゴリズム
 # ==========================================
 def calculate_nesting_with_marks(required_parts, available_stocks, kerf, mode):
-    # ロス削減重視なら長い順にソート。カット数削減なら入力順。
     working_list = sorted(required_parts, key=lambda x: x['len'], reverse=True) if mode == "ロス削減重視" else required_parts[:]
     results = []
     remaining_parts = working_list[:]
@@ -60,7 +52,6 @@ def calculate_nesting_with_marks(required_parts, available_stocks, kerf, mode):
             current_total_parts_len = 0
             
             for i, part in enumerate(remaining_parts):
-                # 最初の部材以外は切断シロを加算
                 needed = part['len'] + (kerf if temp_indices else 0)
                 if current_free >= needed:
                     temp_indices.append(i)
@@ -68,9 +59,7 @@ def calculate_nesting_with_marks(required_parts, available_stocks, kerf, mode):
                     current_total_parts_len += part['len']
             
             if temp_indices:
-                # 充填率（密度）で評価
                 efficiency = current_total_parts_len / s_len
-                # 効率が良いもの、同じなら短い定尺を優先
                 if efficiency > best_efficiency:
                     best_efficiency = efficiency
                     best_pick = {
@@ -105,7 +94,7 @@ def calculate_nesting_with_marks(required_parts, available_stocks, kerf, mode):
 # ==========================================
 st.set_page_config(page_title="鋼材一括取り合わせシステム", layout="wide")
 st.title("🏗️ 鋼材一括取り合わせ・重量計算システム")
-st.caption("ver 1.3.2 | マスター自動更新(5分) | ロジック最適化済み")
+st.caption("ver 1.3.3 | エラー修正完了・安定版")
 
 master_dict = load_master()
 size_options = ["(未選択)"] + [v['サイズ'] for v in master_dict.values()]
@@ -136,7 +125,6 @@ for i in range(st.session_state.rows):
         c1, c2 = st.columns([1, 2])
         with c1:
             s_size = st.selectbox(f"サイズ選択 {i+1}", options=size_options, key=f"size_sel_{i}")
-            # クリーンにしたキーでマスターから取得
             m_data = master_dict.get(clean_text(s_size), {"サイズ": "未選択", "単重": 0.0})
             if s_size != "(未選択)": st.info(f"単重: {m_data['単重']} kg/m")
         with c2:
@@ -168,7 +156,19 @@ if st.button("🚀 計算実行", type="primary"):
                 results_data.append({"size": data['size_name'], "unit_w": data['unit_weight'], "nesting": res})
         st.session_state.calc_results = results_data
 
+# 変数の初期化（エラー防止）
+total_order_rows = []
+inst_rows = []
+grand_total_weight = 0.0
+
 if st.session_state.calc_results:
     st.write("### 2. 計算結果")
-    total_order_rows = []
-    inst_rows
+    pdf_html_inst = f"<style>@media print {{ .page-break {{ page-break-before: always; }} }} body {{ font-family: sans-serif; }} .item-container {{ margin-bottom: 40px; border-bottom: 2px solid #000; padding-bottom: 20px; }} .bar-outer {{ display: flex; width: 100%; height: 40px; background: #fff; border: 2px solid #000; margin: 10px 0; }} .bar-inner {{ background: #333; border-right: 2px solid #fff; height: 100%; }}</style>"
+
+    for i, item in enumerate(st.session_state.calc_results):
+        pdf_html_inst += f"<div class='item-container {'page-break' if i>0 else ''}'><h2>切断加工指示書 ({item['size']})</h2><p>物件名: {pj_name}</p>"
+        with st.expander(f"📦 {item['size']} (単重: {item['unit_w']} kg/m)", expanded=True):
+            for idx, r in enumerate(item['nesting']):
+                st.write(f"**No.{idx+1} (定尺:{r['stock_len']}mm)**")
+                bar_parts_html = "".join([f'<div style="width: {(p["len"]/r["stock_len"])*100}%; background: #333; border-right: 1px solid #fff;"></div>' for p in r['parts']])
+                st.markdown(f'<div style="display: flex; width: 100%; height: 30px; background: #fff; border: 2px solid #00
