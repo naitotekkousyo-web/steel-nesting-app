@@ -34,7 +34,7 @@ def load_master():
         return {}
 
 # ==========================================
-# 3. ロジック：最短定尺優先・ロス削減
+# 3. ロジック：最短定尺優先
 # ==========================================
 def calculate_nesting_optimal(required_parts, available_stocks, kerf, min_waste, max_waste):
     remaining_parts = sorted(required_parts, key=lambda x: x['len'], reverse=True)
@@ -132,20 +132,45 @@ if st.button("🚀 計算実行", type="primary"):
         st.session_state.calc_results = results_data
 
 # ==========================================
-# 5. 結果表示 & イラスト & 帳票
+# 5. 結果表示 & 印刷プレビュー対策
 # ==========================================
 if st.session_state.calc_results:
     st.write("### 2. 計算結果")
     total_order_rows, inst_rows = [], []
     grand_total_weight = 0.0
     
-    # PDF/HTML用のスタイル定義（白黒バー）
+    # 【印刷時も確実に黒く表示するためのCSS】
+    # 背景色(background)ではなく、内側へのシャドウ(box-shadow)を使うと印刷されやすくなります。
     bar_css = """
     <style>
-        .bar-outer { display: flex; width: 100%; height: 35px; background: #fff; border: 2px solid #000; margin: 5px 0; overflow: hidden; }
-        .part-bar { background: #000; border-right: 1px solid #fff; height: 100%; }
-        .waste-bar { background: #fff; height: 100%; }
-        @media print { .page-break { page-break-before: always; } body { font-family: sans-serif; } .item-container { margin-bottom: 30px; border-bottom: 2px solid #000; padding-bottom: 15px; } }
+        .bar-outer { 
+            display: flex; width: 100%; height: 35px; 
+            background-color: #ffffff !important; 
+            border: 2px solid #000000 !important; 
+            margin: 5px 0; overflow: hidden;
+            -webkit-print-color-adjust: exact; 
+            print-color-adjust: exact;
+        }
+        .part-bar { 
+            background-color: #000000 !important; 
+            box-shadow: inset 0 0 0 1000px #000000; /* 印刷用強制塗りつぶし */
+            border-right: 1px solid #ffffff; 
+            height: 100%; 
+            -webkit-print-color-adjust: exact; 
+            print-color-adjust: exact;
+        }
+        .waste-bar { 
+            background-color: #ffffff !important; 
+            height: 100%; 
+            -webkit-print-color-adjust: exact; 
+            print-color-adjust: exact;
+        }
+        @media print { 
+            .page-break { page-break-before: always; } 
+            .item-container { margin-bottom: 30px; border-bottom: 2px solid #000; padding-bottom: 15px; }
+            /* 印刷時に白黒反転しないよう強制 */
+            .part-bar { background-color: black !important; -webkit-filter: brightness(0); filter: brightness(0); }
+        }
     </style>
     """
     st.markdown(bar_css, unsafe_allow_html=True)
@@ -157,20 +182,17 @@ if st.session_state.calc_results:
             for idx, r in enumerate(item['nesting']):
                 st.write(f"**No.{idx+1} (定尺:{r['stock_len']}mm)**")
                 
-                # バー生成
                 parts_html = "".join([f'<div class="part-bar" style="width: {(p["len"]/r["stock_len"])*100}%;"></div>' for p in r['parts']])
                 total_used_p = sum(p['len'] for p in r['parts']) + (len(r['parts'])-1)*default_kerf
                 waste_ratio = max(0, (r['stock_len'] - total_used_p) / r['stock_len'] * 100)
                 waste_html = f'<div class="waste-bar" style="width: {waste_ratio}%;"></div>'
                 bar_final = f'<div class="bar-outer">{parts_html}{waste_html}</div>'
                 
-                # 画面にイラスト表示
                 st.markdown(bar_final, unsafe_allow_html=True)
                 
                 detail_txt = " / ".join([f"({s+1}) {p['mark']}:{int(p['len'])}mm" for s, p in enumerate(r['parts'])])
                 st.caption(f"{detail_txt} [端材:{int(r['waste'])}mm]")
                 
-                # HTMLデータ蓄積
                 item_html += f"<div style='margin-top:15px;'><strong>No.{idx+1} | 定尺: {r['stock_len']}mm</strong></div>{bar_final}<div style='font-size:13px;'>{detail_txt} [端材:{int(r['waste'])}mm]</div>"
                 inst_rows.append({"鋼種": item['size'], "No": idx+1, "定尺": r['stock_len'], "構成": detail_txt, "端材": r['waste']})
 
@@ -183,8 +205,6 @@ if st.session_state.calc_results:
         pdf_html_body += item_html + "</div>"
 
     st.divider()
-    st.metric(label="🏁 総合計重量", value=f"{round(grand_total_weight, 2)} kg")
-    
     st.write("### 3. 帳票出力")
     today = datetime.date.today().strftime("%Y%m%d")
     c1, c2 = st.columns(2)
