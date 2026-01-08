@@ -75,12 +75,6 @@ def calculate_nesting_optimal(required_parts, available_stocks, kerf, min_waste,
 # ==========================================
 # 4. 画面構成
 # ==========================================
-# 【修正】リセットボタンが押されたかどうかの判定を最初に行う
-if "reset_trigger" in st.session_state and st.session_state.reset_trigger:
-    for key in list(st.session_state.keys()):
-        del st.session_state[key]
-    st.rerun()
-
 st.set_page_config(page_title="鋼材一括取り合わせシステム", layout="wide")
 st.title("🏗️ 鋼材一括取り合わせ・重量計算システム")
 
@@ -111,11 +105,7 @@ with st.sidebar:
     stock_lengths = sorted([L for L in range(6000, 13000, 1000)])
     selected_stocks = [L for L in stock_lengths if st.checkbox(f"{L}mm", value=True, key=f"stock_{L}")]
     
-    st.divider()
-    # 【修正】リセットボタン：フラグを立てるだけにする
-    if st.button("🔴 全てリセット", use_container_width=True):
-        st.session_state.reset_trigger = True
-        st.rerun()
+    # 全てリセットボタンを削除しました
 
 st.write("### 1. 切断リスト入力")
 input_data_list = []
@@ -134,7 +124,10 @@ for i in range(st.session_state.rows):
             input_data_list.append({"size_name": m_data['サイズ'], "unit_weight": m_data['単重'], "df": edited_df})
     st.divider()
 
-st.button("➕ 鋼種を増やす", on_click=lambda: setattr(st.session_state, 'rows', st.session_state.rows + 1))
+def add_row():
+    st.session_state.rows += 1
+
+st.button("➕ 鋼種を増やす", on_click=add_row)
 
 if st.button("🚀 計算実行", type="primary"):
     if not selected_stocks:
@@ -155,7 +148,7 @@ if st.button("🚀 計算実行", type="primary"):
         st.session_state.calc_results = results_data
 
 # --- 結果・帳票出力 ---
-if st.session_state.get('calc_results'):
+if st.session_state.calc_results:
     st.write("### 2. 計算結果")
     total_order_rows, inst_rows = [], []
     grand_total_weight = 0.0
@@ -172,6 +165,7 @@ if st.session_state.get('calc_results'):
                 st.caption(f"{detail_txt} [端材:{int(r['waste'])}mm]")
                 pdf_html_inst += f"<div style='margin-top:20px;'><strong>No.{idx+1} | 定尺: {r['stock_len']}mm</strong></div><div class='bar-outer'>{bar_parts_html}</div><div style='font-size:14px;'>{detail_txt} [端材:{int(r['waste'])}mm]</div>"
                 inst_rows.append({"物件名": pj_name, "鋼種": item['size'], "No": idx+1, "定尺(mm)": r['stock_len'], "切断構成": detail_txt, "端材(mm)": int(r['waste'])})
+            
             counts = pd.Series([r['stock_len'] for r in item['nesting']]).value_counts().sort_index()
             summary_data = []
             for s_len, count in counts.items():
@@ -191,13 +185,13 @@ if st.session_state.get('calc_results'):
     with c1:
         st.info("📊 **発注書**")
         if total_order_rows:
-            st.download_button("💾 CSVで保存", pd.DataFrame(total_order_rows).to_csv(index=False).encode('utf-8-sig'), f"Order_{today}.csv", "text/csv")
+            st.download_button("💾 CSVで保存", pd.DataFrame(total_order_rows).to_csv(index=False).encode('utf-8-sig'), f"Order_{today}.csv", "text/csv", key="dl_order_csv")
             order_html = f"<h2>鋼材発注書</h2><p>物件名: {pj_name}</p><table border='1' style='border-collapse:collapse; width:100%;'><tr><th>鋼種</th><th>定尺</th><th>本数</th><th>重量(kg)</th></tr>"
             for d in total_order_rows: order_html += f"<tr><td>{d['鋼種']}</td><td>{d['定尺(mm)']}mm</td><td>{d['本数']}</td><td>{d['総重量(kg)']}</td></tr>"
             order_html += f"<tr><td colspan='3' align='right'><b>総合計重量</b></td><td><b>{round(grand_total_weight, 2)} kg</b></td></tr></table><script>window.print();</script>"
-            st.download_button("🖨️ PDF/印刷用", order_html, f"Order_{today}.html", "text/html")
+            st.download_button("🖨️ PDF/印刷用", order_html, f"Order_{today}.html", "text/html", key="dl_order_html")
     with c2:
         st.info("✂️ **加工指示書**")
         if inst_rows:
-            st.download_button("💾 CSVで保存", pd.DataFrame(inst_rows).to_csv(index=False).encode('utf-8-sig'), f"CutList_{today}.csv", "text/csv")
-            st.download_button("🖨️ PDF/印刷用", pdf_html_inst + "<script>window.print();</script>", f"CutList_{today}.html", "text/html")
+            st.download_button("💾 CSVで保存", pd.DataFrame(inst_rows).to_csv(index=False).encode('utf-8-sig'), f"CutList_{today}.csv", "text/csv", key="dl_cut_csv")
+            st.download_button("🖨️ PDF/印刷用", pdf_html_inst + "<script>window.print();</script>", f"CutList_{today}.html", "text/html", key="dl_cut_html")
