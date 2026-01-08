@@ -34,7 +34,7 @@ def load_master():
         return {}
 
 # ==========================================
-# 3. ロジック：最短定尺優先
+# 3. ロジック：最短定尺優先・ロス削減
 # ==========================================
 def calculate_nesting_optimal(required_parts, available_stocks, kerf, min_waste, max_waste):
     remaining_parts = sorted(required_parts, key=lambda x: x['len'], reverse=True)
@@ -119,9 +119,9 @@ if st.button("🚀 計算実行", type="primary"):
     else:
         results_data = []
         for data in input_data_list:
-            df_valid = data['df'].dropna(subset=["長さ(mm)", "本数"])
+            df_v = data['df'].dropna(subset=["長さ(mm)", "本数"])
             parts = []
-            for _, row in df_valid.iterrows():
+            for _, row in df_v.iterrows():
                 try:
                     l, n, m = float(row["長さ(mm)"]), int(row["本数"]), str(row["マーク"])
                     for _ in range(n): parts.append({"len": l, "mark": m})
@@ -132,66 +132,70 @@ if st.button("🚀 計算実行", type="primary"):
         st.session_state.calc_results = results_data
 
 # ==========================================
-# 5. 結果表示 & 色分けHTML生成
+# 5. 結果表示 & イラスト & 帳票
 # ==========================================
 if st.session_state.calc_results:
     st.write("### 2. 計算結果")
     total_order_rows, inst_rows = [], []
     grand_total_weight = 0.0
     
-    # PDF/HTML用のスタイル（黒と白を明確に）
-    pdf_html_inst = """
+    # PDF/HTML用のスタイル定義（白黒バー）
+    bar_css = """
     <style>
-        @media print { .page-break { page-break-before: always; } }
-        body { font-family: sans-serif; color: #000; }
-        .item-container { margin-bottom: 40px; border-bottom: 2px solid #000; padding-bottom: 20px; }
-        .bar-outer { display: flex; width: 100%; height: 40px; background: #fff; border: 2px solid #000; margin: 10px 0; overflow: hidden; }
+        .bar-outer { display: flex; width: 100%; height: 35px; background: #fff; border: 2px solid #000; margin: 5px 0; overflow: hidden; }
         .part-bar { background: #000; border-right: 1px solid #fff; height: 100%; }
         .waste-bar { background: #fff; height: 100%; }
+        @media print { .page-break { page-break-before: always; } body { font-family: sans-serif; } .item-container { margin-bottom: 30px; border-bottom: 2px solid #000; padding-bottom: 15px; } }
     </style>
     """
+    st.markdown(bar_css, unsafe_allow_html=True)
+    pdf_html_body = bar_css
 
     for i, item in enumerate(st.session_state.calc_results):
-        pdf_html_inst += f"<div class='item-container {'page-break' if i>0 else ''}'><h2>切断加工指示書 ({item['size']})</h2><p>物件名: {pj_name}</p>"
+        item_html = f"<div class='item-container {'page-break' if i>0 else ''}'><h2>切断加工指示書 ({item['size']})</h2><p>物件名: {pj_name}</p>"
         with st.expander(f"📦 {item['size']}", expanded=True):
             for idx, r in enumerate(item['nesting']):
                 st.write(f"**No.{idx+1} (定尺:{r['stock_len']}mm)**")
                 
-                # --- 色分けバー生成 (部材=黒, 残材=白) ---
+                # バー生成
                 parts_html = "".join([f'<div class="part-bar" style="width: {(p["len"]/r["stock_len"])*100}%;"></div>' for p in r['parts']])
-                # 残材部分の計算
-                total_used = sum(p['len'] for p in r['parts']) + (len(r['parts'])-1)*default_kerf
-                waste_ratio = max(0, (r['stock_len'] - total_used) / r['stock_len'] * 100)
+                total_used_p = sum(p['len'] for p in r['parts']) + (len(r['parts'])-1)*default_kerf
+                waste_ratio = max(0, (r['stock_len'] - total_used_p) / r['stock_len'] * 100)
                 waste_html = f'<div class="waste-bar" style="width: {waste_ratio}%;"></div>'
+                bar_final = f'<div class="bar-outer">{parts_html}{waste_html}</div>'
                 
-                # 画面表示用
-                st.markdown(f'<div class="bar-outer">{parts_html}{waste_html}</div>', unsafe_allow_html=True)
+                # 画面にイラスト表示
+                st.markdown(bar_final, unsafe_allow_html=True)
                 
-                detail_txt = " / ".join([f"({seq+1}) {p['mark']}:{int(p['len'])}mm" for seq, p in enumerate(r['parts'])])
+                detail_txt = " / ".join([f"({s+1}) {p['mark']}:{int(p['len'])}mm" for s, p in enumerate(r['parts'])])
                 st.caption(f"{detail_txt} [端材:{int(r['waste'])}mm]")
                 
-                # 指示書HTML用
-                pdf_html_inst += f"<div style='margin-top:20px;'><strong>No.{idx+1} | 定尺: {r['stock_len']}mm</strong></div>"
-                pdf_html_inst += f"<div class='bar-outer'>{parts_html}{waste_html}</div><div style='font-size:14px;'>{detail_txt} [端材:{int(r['waste'])}mm]</div>"
+                # HTMLデータ蓄積
+                item_html += f"<div style='margin-top:15px;'><strong>No.{idx+1} | 定尺: {r['stock_len']}mm</strong></div>{bar_final}<div style='font-size:13px;'>{detail_txt} [端材:{int(r['waste'])}mm]</div>"
                 inst_rows.append({"鋼種": item['size'], "No": idx+1, "定尺": r['stock_len'], "構成": detail_txt, "端材": r['waste']})
 
-            # 発注集計
             counts = pd.Series([r['stock_len'] for r in item['nesting']]).value_counts().sort_index()
             for s_len, count in counts.items():
                 w = round((s_len / 1000) * item['unit_w'] * count, 2)
-                total_order_rows.append({"鋼種": item['size'], "定尺": s_len, "本数": count, "重量": w})
+                total_order_rows.append({"物件名": pj_name, "鋼種": item['size'], "定尺": s_len, "本数": count, "重量": w})
                 grand_total_weight += w
-        pdf_html_inst += "</div>"
+            st.table(pd.DataFrame([{"定尺": s, "本数": c, "重量": round((s/1000)*item['unit_w']*c,2)} for s,c in counts.items()]))
+        pdf_html_body += item_html + "</div>"
 
+    st.divider()
+    st.metric(label="🏁 総合計重量", value=f"{round(grand_total_weight, 2)} kg")
+    
     st.write("### 3. 帳票出力")
     today = datetime.date.today().strftime("%Y%m%d")
     c1, c2 = st.columns(2)
     with c1:
         st.info("📊 発注書")
         if total_order_rows:
-            order_df = pd.DataFrame(total_order_rows)
-            st.download_button("🖨️ PDF/印刷用", f"<h2>発注書</h2>{order_df.to_html()}<script>window.print();</script>", f"Order_{today}.html", "text/html")
+            df_order = pd.DataFrame(total_order_rows)
+            st.download_button("💾 CSVで保存", df_order.to_csv(index=False).encode('utf-8-sig'), f"Order_{today}.csv", "text/csv")
+            st.download_button("🖨️ PDF/印刷用", f"<h2>鋼材発注書</h2>{df_order.to_html()}<script>window.print();</script>", f"Order_{today}.html", "text/html")
     with c2:
         st.info("✂️ 加工指示書")
         if inst_rows:
-            st.download_button("🖨️ PDF/印刷用", pdf_html_inst + "<script>window.print();</script>", f"CutList_{today}.html", "text/html")
+            st.download_button("💾 CSVで保存", pd.DataFrame(inst_rows).to_csv(index=False).encode('utf-8-sig'), f"CutList_{today}.csv", "text/csv")
+            st.download_button("🖨️ PDF/印刷用", pdf_html_body + "<script>window.print();</script>", f"CutList_{today}.html", "text/html")
