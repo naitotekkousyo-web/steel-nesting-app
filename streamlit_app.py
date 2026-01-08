@@ -3,7 +3,6 @@ import pandas as pd
 import requests
 import io
 import datetime
-from collections import Counter
 
 # ==========================================
 # 1. ユーティリティ関数
@@ -13,7 +12,7 @@ def clean_text(t):
     return str(t).upper().replace("*","X").replace("×","X").replace(" ","").strip()
 
 # ==========================================
-# 2. マスター読み込み（自動更新: 5分）
+# 2. マスター読み込み
 # ==========================================
 SHEET_ID = "1vyjK-jW-5Nl0VRHZRUyKlNAqIaO49NUxe3-kwvTtSUg"
 SHEET_NAME = "master"
@@ -35,138 +34,70 @@ def load_master():
         return {}
 
 # ==========================================
-# 3. ロジック：モード別の挙動（まとめ切り対応 ＋ 残材範囲指定）
+# 3. ロジック：最短定尺優先・ロス最小化
 # ==========================================
-def calculate_nesting_with_marks(required_parts, available_stocks, kerf, mode, min_waste_limit, max_waste_limit):
-    # 部材は常に長い順に並べておく
-    working_list = sorted(required_parts, key=lambda x: x['len'], reverse=True)
+def calculate_nesting_optimal(required_parts, available_stocks, kerf, min_waste, max_waste):
+    # 部材を長い順にソート（大きいものから場所を確保するのが効率的）
+    remaining_parts = sorted(required_parts, key=lambda x: x['len'], reverse=True)
     results = []
     
-    # 処理用リスト
-    remaining_parts = working_list[:]
-    
-    # 定尺の優先順位
-    if mode == "ロス削減重視":
-        stocks_order = sorted(available_stocks) # 短い順
-    else:
-        stocks_order = sorted(available_stocks, reverse=True) # 長い順
+    # 定尺を短い順に並べる（3000mmならまず6000mmから試すため）
+    stocks_asc = sorted(available_stocks)
 
     while remaining_parts:
-        best_pick = None
+        best_fit = None
         
-        # ---------------------------------------------------------
-        # A. カット数削減重視（パターンリピート最大化）
-        # ---------------------------------------------------------
-        if mode == "カット数削減重視":
-            pattern_candidate = None
+        # すべての定尺を「短い順」にチェック
+        for s_len in stocks_asc:
+            temp_parts_indices = []
+            current_free = s_len
             
-            for s_len in stocks_order:
-                temp_indices = []
-                current_free = s_len
-                current_used = 0
+            # この定尺に詰め込めるだけ詰め込む
+            for i, part in enumerate(remaining_parts):
+                needed = part['len'] + (kerf if temp_parts_indices else 0)
+                if current_free >= needed:
+                    temp_parts_indices.append(i)
+                    current_free -= (part['len'] + kerf)
+            
+            if temp_parts_indices:
+                # この定尺を使った時の端材を計算
+                total_parts_len = sum(remaining_parts[i]['len'] for i in temp_parts_indices)
+                waste = s_len - total_parts_len - (len(temp_parts_indices)-1)*kerf
                 
-                for i, part in enumerate(remaining_parts):
-                    needed = part['len'] + (kerf if temp_indices else 0)
-                    if current_free >= needed:
-                        temp_indices.append(i)
-                        current_free -= (part['len'] + kerf)
-                        current_used += part['len']
-                
-                if temp_indices:
-                    waste = s_len - current_used - (len(temp_indices)-1)*kerf
-                    
-                    # カット数削減モードでも、明らかに設定範囲外の残材が出る定尺は避けるべきか？
-                    # 基本的には「まとめ切り」優先だが、もし判定を入れるならここ。
-                    # 今回は「作業性最優先」のため、入ればOKとするが、
-                    # あまりに短い端材（min未満）が出る場合は次を探すなど調整可能。
-                    # いったんここは「入ればOK」とする。
-                    
-                    pattern_candidate = {
+                # 【判定条件】
+                # 1. 残材が設定範囲(min〜max)に収まっている
+                # 2. または、端材が切断シロ以下（ほぼピッタリ使い切っている）
+                if (min_waste <= waste <= max_waste) or (waste <= kerf):
+                    best_fit = {
                         "stock_len": s_len,
-                        "indices": temp_indices,
-                        "waste": waste,
-                        "lengths": [remaining_parts[i]['len'] for i in temp_indices]
+                        "indices": temp_parts_indices,
+                        "waste": int(waste)
                     }
-                    break 
-            
-            if pattern_candidate:
-                req_counts = Counter(pattern_candidate['lengths'])
-                total_counts = Counter([p['len'] for p in remaining_parts])
-                
-                max_repeats = float('inf')
-                for length, count_needed in req_counts.items():
-                    available = total_counts.get(length, 0)
-                    max_repeats = min(max_repeats, available // count_needed)
-                
-                if max_repeats < 1: max_repeats = 1
-                
-                for _ in range(max_repeats):
-                    chosen_parts = []
-                    for length in pattern_candidate['lengths']:
-                        for i, part in enumerate(remaining_parts):
-                            if part['len'] == length:
-                                chosen_parts.append(remaining_parts.pop(i))
-                                break
-                    results.append({
-                        "stock_len": pattern_candidate['stock_len'],
-                        "parts": chosen_parts,
-                        "waste": int(pattern_candidate['waste'])
-                    })
-                continue
-
-        # ---------------------------------------------------------
-        # B. ロス削減重視（残材範囲指定を厳密に適用）
-        # ---------------------------------------------------------
-        else:
-            best_waste = float('inf')
-            
-            for s_len in stocks_order:
-                temp_indices = []
-                current_free = s_len
-                current_used = 0
-                
-                for i, part in enumerate(remaining_parts):
-                    needed = part['len'] + (kerf if temp_indices else 0)
-                    if current_free >= needed:
-                        temp_indices.append(i)
-                        current_free -= (part['len'] + kerf)
-                        current_used += part['len']
-                
-                if temp_indices:
-                    waste = s_len - current_used - (len(temp_indices)-1)*kerf
-                    
-                    # 【修正】残材が設定範囲内（min以上 max以下）かチェック
-                    # ※ただし、ほぼゼロ（切断シロ以下）なら「ピッタリ」なのでOKとする
-                    is_range_ok = (min_waste_limit <= waste <= max_waste_limit)
-                    is_perfect = (waste <= kerf)
-                    
-                    if is_range_ok or is_perfect:
-                        if waste < best_waste:
-                            best_waste = waste
-                            best_pick = {"stock_len": s_len, "indices": temp_indices, "waste": waste}
-        
-            if best_pick:
-                chosen_parts = [remaining_parts[i] for i in best_pick["indices"]]
-                for i in sorted(best_pick["indices"], reverse=True):
-                    remaining_parts.pop(i)
-                results.append({
-                    "stock_len": best_pick["stock_len"],
-                    "parts": chosen_parts,
-                    "waste": int(best_pick["waste"])
-                })
-            else:
-                # 設定範囲に収まる定尺がない場合
-                # 仕方ないので一番長い定尺を使って1本だけ処理（無限ループ回避）
-                if remaining_parts:
-                    part = remaining_parts.pop(0)
-                    max_stock = max(available_stocks)
-                    results.append({
-                        "stock_len": max_stock,
-                        "parts": [part],
-                        "waste": int(max_stock - part['len'])
-                    })
-                else:
+                    # 短い順に試しているので、条件に合うものが見つかった時点で「最短の定尺」として確定
                     break
+        
+        # 条件に合う定尺が見つかった場合
+        if best_fit:
+            chosen_parts = [remaining_parts[i] for i in best_fit["indices"]]
+            # インデックスがずれないよう降順で削除
+            for i in sorted(best_fit["indices"], reverse=True):
+                remaining_parts.pop(i)
+            
+            results.append({
+                "stock_len": best_fit["stock_len"],
+                "parts": chosen_parts,
+                "waste": best_fit["waste"]
+            })
+        else:
+            # もし設定範囲（残材min〜max）に合う定尺が一つもなかった場合、
+            # 仕方ないので「一番長い定尺」を使って強制的に1本処理する（計算を止めないため）
+            part = remaining_parts.pop(0)
+            max_s = max(available_stocks)
+            results.append({
+                "stock_len": max_s,
+                "parts": [part],
+                "waste": int(max_s - part['len'])
+            })
             
     return results
 
@@ -175,7 +106,7 @@ def calculate_nesting_with_marks(required_parts, available_stocks, kerf, mode, m
 # ==========================================
 st.set_page_config(page_title="鋼材一括取り合わせシステム", layout="wide")
 st.title("🏗️ 鋼材一括取り合わせ・重量計算システム")
-st.caption("ver 1.5.1 | 残材設定入力 修正済み")
+st.caption("ver 1.6.0 | ロジック修正：最短定尺優先・ロス削減特化版")
 
 master_dict = load_master()
 size_options = ["(未選択)"] + [v['サイズ'] for v in master_dict.values()]
@@ -187,30 +118,23 @@ with st.sidebar:
     st.header("🏢 物件情報")
     pj_name = st.text_input("物件名・現場名", placeholder="例：〇〇邸新築工事")
     st.divider()
-    st.header("⚙️ 計算設定")
     
-    # モード設定
-    calc_mode = st.radio("計算モード", ["ロス削減重視", "カット数削減重視"])
-    if calc_mode == "ロス削減重視":
-        st.caption("💡 **重量最優先**：端材設定を守りつつ、最もロスの少ない定尺を選定します。")
-    else:
-        st.caption("💡 **作業性最優先**：同じパターンを繰り返して「まとめ切り」しやすくします。")
+    st.header("⚙️ 計算設定")
+    st.info("💡 **ロス削減設定**：短い定尺から優先的に使用し、端材が指定範囲内に収まるよう計算します。")
     
     default_kerf = st.number_input("切断シロ (mm)", value=5, step=1)
     
-    # 【修正】残材長さ設定（両方とも入力可能に・ステップ値設定）
     st.write("残材許容範囲 (mm)")
     c_w1, c_w2 = st.columns(2)
     with c_w1:
-        # 初期値 10mm
-        min_waste = st.number_input("最小", value=10, step=10, help="これ以下の端材が出ないようにします（0に近いジャストサイズは許容）")
+        min_waste = st.number_input("最小", value=10, step=10)
     with c_w2:
-        # 初期値 1000mm、入力可能に変更
-        max_waste = st.number_input("最大", value=1000, step=100, help="これ以上の長い端材が出ないように定尺を選びます")
+        max_waste = st.number_input("最大", value=1000, step=100)
     
     st.write("使用する定尺長さ")
     stock_lengths = sorted([L for L in range(6000, 13000, 1000)])
     selected_stocks = [L for L in stock_lengths if st.checkbox(f"{L}mm", value=True, key=f"stock_{L}")]
+    
     st.divider()
     if st.button("🔴 全てのリセット", use_container_width=True):
         st.session_state.rows = 1
@@ -236,7 +160,7 @@ st.button("➕ 鋼種を増やす", on_click=lambda: setattr(st.session_state, '
 
 if st.button("🚀 計算実行", type="primary"):
     if not selected_stocks:
-        st.error("使用する定尺長さを少なくとも1つ選択してください。")
+        st.error("定尺長さを選択してください。")
     else:
         results_data = []
         for data in input_data_list:
@@ -248,11 +172,11 @@ if st.button("🚀 計算実行", type="primary"):
                     for _ in range(n): parts.append({"len": l, "mark": m})
                 except Exception: continue
             if parts:
-                res = calculate_nesting_with_marks(parts, selected_stocks, default_kerf, calc_mode, min_waste, max_waste)
+                res = calculate_nesting_optimal(parts, selected_stocks, default_kerf, min_waste, max_waste)
                 results_data.append({"size": data['size_name'], "unit_w": data['unit_weight'], "nesting": res})
         st.session_state.calc_results = results_data
 
-# 変数の初期化
+# --- 結果表示・帳票出力（前回と同様） ---
 total_order_rows = []
 inst_rows = []
 grand_total_weight = 0.0
@@ -267,7 +191,6 @@ if st.session_state.calc_results:
         with st.expander(f"📦 {item['size']} (単重: {item['unit_w']} kg/m)", expanded=True):
             for idx, r in enumerate(item['nesting']):
                 st.write(f"**No.{idx+1} (定尺:{r['stock_len']}mm)**")
-                
                 bar_parts_html = "".join([f'<div style="width: {(p["len"]/r["stock_len"])*100}%; background: #333; border-right: 1px solid #fff;"></div>' for p in r['parts']])
                 bar_style = "display: flex; width: 100%; height: 30px; background: #fff; border: 2px solid #000; margin-bottom: 5px;"
                 st.markdown(f'<div style="{bar_style}">{bar_parts_html}</div>', unsafe_allow_html=True)
@@ -276,9 +199,7 @@ if st.session_state.calc_results:
                 st.caption(f"{detail_txt} [端材:{int(r['waste'])}mm]")
                 
                 pdf_html_inst += f"<div style='margin-top:20px;'><strong>No.{idx+1} | 定尺: {r['stock_len']}mm</strong></div>"
-                pdf_html_inst += f"<div class='bar-outer'>{bar_parts_html}</div>"
-                pdf_html_inst += f"<div style='font-size:14px;'>{detail_txt} [端材:{int(r['waste'])}mm]</div>"
-                
+                pdf_html_inst += f"<div class='bar-outer'>{bar_parts_html}</div><div style='font-size:14px;'>{detail_txt} [端材:{int(r['waste'])}mm]</div>"
                 inst_rows.append({"物件名": pj_name, "鋼種": item['size'], "No": idx+1, "定尺(mm)": r['stock_len'], "切断構成": detail_txt, "端材(mm)": int(r['waste'])})
 
             counts = pd.Series([r['stock_len'] for r in item['nesting']]).value_counts().sort_index()
@@ -293,9 +214,7 @@ if st.session_state.calc_results:
         pdf_html_inst += "</div>"
 
     st.divider()
-    c_tot1, c_tot2 = st.columns([2, 1])
-    with c_tot1: st.subheader("🏁 全鋼種 総合計重量")
-    with c_tot2: st.metric(label="Grand Total", value=f"{round(grand_total_weight, 2)} kg")
+    st.metric(label="🏁 全鋼種 総合計重量", value=f"{round(grand_total_weight, 2)} kg")
     st.divider()
 
     st.write("### 3. 帳票出力")
