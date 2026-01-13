@@ -16,7 +16,7 @@ def clean_text(t):
 # ==========================================
 SHEET_ID = "1vyjK-jW-5Nl0VRHZRUyKlNAqIaO49NUxe3-kwvTtSUg"
 SHEET_NAME = "master"
-SHEET_URL = SHEET_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid=0"
+SHEET_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&gid=0"
 @st.cache_data(ttl=300)
 def load_master():
     try:
@@ -218,4 +218,5 @@ if st.session_state.calc_results:
         if inst_rows:
             st.download_button("💾 CSVで保存", pd.DataFrame(inst_rows).to_csv(index=False).encode('utf-8-sig'), f"CutList_{today}.csv", "text/csv")
             st.download_button("🖨️ PDF/印刷用", pdf_html_body + "<script>window.print();</script>", f"CutList_{today}.html", "text/html")
+
 
