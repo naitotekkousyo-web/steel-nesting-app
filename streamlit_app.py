@@ -1,9 +1,13 @@
 import streamlit as st
 import streamlit.components.v1 as components
 
-# Google AdSense
+# 1. ページの基本設定（これを最初に入れると認識されやすくなります）
+st.set_page_config(page_title="鋼材ネスト計算ツール")
+
+# 2. Google AdSense確認用（あえて少し高さを出し、テキストも添えます）
 components.html(
     """
+    <div style="color: #f0f2f6; font-size: 1px;">Google AdSense Verification</div>
     <meta name="google-adsense-account" content="ca-pub-7743829473241813">
     <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-7743829473241813"
      crossorigin="anonymous"></script>
@@ -11,6 +15,7 @@ components.html(
     height=50
 )
 
+import pandas as pd
 import pandas as pd
 
 import pandas as pd
@@ -237,6 +242,7 @@ if st.session_state.calc_results:
         if inst_rows:
             st.download_button("💾 CSVで保存", pd.DataFrame(inst_rows).to_csv(index=False).encode('utf-8-sig'), f"CutList_{today}.csv", "text/csv")
             st.download_button("🖨️ PDF/印刷用", pdf_html_body + "<script>window.print();</script>", f"CutList_{today}.html", "text/html")
+
 
 
 
