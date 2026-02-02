@@ -1,12 +1,14 @@
 import streamlit as st
 import streamlit.components.v1 as components
 
-# 1. ページの基本設定（Googleに見つけてもらいやすくします）
+# 1. ページの基本設定
 st.set_page_config(page_title="鋼材ネスト計算ツール")
 
-# 2. Google AdSense確認用コード（メタタグ＋スクリプト）
+# 2. Google AdSense & Search Console 認証用
 components.html(
     """
+    <meta name="google-site-verification" content="f681Jn_Mohl00-rr1xf9aXSaldOAn35iHTk9zFqiHWs" />
+    
     <meta name="google-adsense-account" content="ca-pub-7743829473241813">
     <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-7743829473241813"
      crossorigin="anonymous"></script>
@@ -15,9 +17,6 @@ components.html(
 )
 
 import pandas as pd
-import requests
-import pandas as pd
-
 import pandas as pd
 
 import pandas as pd
@@ -242,6 +241,7 @@ if st.session_state.calc_results:
         if inst_rows:
             st.download_button("💾 CSVで保存", pd.DataFrame(inst_rows).to_csv(index=False).encode('utf-8-sig'), f"CutList_{today}.csv", "text/csv")
             st.download_button("🖨️ PDF/印刷用", pdf_html_body + "<script>window.print();</script>", f"CutList_{today}.html", "text/html")
+
 
 
 
